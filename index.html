@@ -1044,7 +1044,7 @@ const POS = {
                   : isLow ? `<span class="badge badge-orange">Low</span>`
                   : `<span class="badge badge-green">✓</span>`;
       const stockStr = (item.unit==='kg'||item.unit==='L') ? stock.toFixed(2) : Math.floor(stock);
-      return `<div class="item-card ${isOut?'out-stock':isLow?'low-stock':''}" onclick="${isOut?'toast(\"Out of stock!\",\"error\")':'POS.addFlow(\"'+item.id+'\")'}" >
+      return `<div class="item-card ${isOut?'out-stock':isLow?'low-stock':''}" onclick="POS.addFlow('${item.id}')">
         ${img}
         <div class="item-card-name">${esc(item.name)}</div>
         <div class="item-card-price">${cur} ${(item.price||0).toFixed(2)}<span style="font-size:9px;color:var(--t3)"> /${item.unit||'u'}</span></div>
@@ -1958,7 +1958,7 @@ RULES:
 - Always use Rs. for prices`;
 
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`, {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
@@ -2121,7 +2121,10 @@ const Settings = {
 
 // ─── HELPERS ──────────────────────────────────────
 function getStock(item) {
-  return (item.stockBatches||[]).reduce((s,b) => s+(b.quantity||0), 0);
+  const batches = item.stockBatches;
+  if (!batches) return 0;
+  const arr = Array.isArray(batches) ? batches : Object.values(batches);
+  return arr.reduce((s,b) => s + (b ? (b.quantity||0) : 0), 0);
 }
 function getCatEmoji(catId) {
   const cat = S.categories.find(c=>c.id===catId);
