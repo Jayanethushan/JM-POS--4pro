@@ -1914,111 +1914,106 @@ const Backup = {
   }
 };
 
-// ─── AI (GROQ VERSION) ───────────────────────────────────────────
+// ─── POS-GPT STYLE AI ENGINE (GROQ) ──────────────────────────────
 const AI = {
   _pending: null,
   async send() {
     const input = document.getElementById('aiInput');
     const msg = input.value.trim();
     if (!msg) return;
+    
     input.value = '';
     this.addMsg('user', msg);
     this.showTyping();
 
-    if (this._pending) {
-      const lower = msg.toLowerCase();
-      if (lower.includes('ඔව්') || lower.includes('yes') || lower.includes('add') || lower.includes('දාන්න') || lower.includes('ok')) {
-        const item = this._pending;
-        this._pending = null;
-        this.hideTyping();
-        POS.addFlow(item.id);
-        this.addMsg('bot', `✅ **${item.name}** cart එකට add කළා! POS tab check කරන්න.`);
-        return;
-      }
-      this._pending = null;
-    }
+    // 1. ඔබේ Groq Key එක Settings වලින් ලබා ගැනීම
+    const key = S.settings.geminiKey || "ඔබේ_GROQ_API_KEY_එක_මෙතැනට";
 
-    // Settings වලින් හෝ Default ලෙස ඇති Groq Key එක ලබා ගැනීම
-    const key = S.settings.geminiKey || "ඔබේ_GROQ_API_KEY_එක_මෙතැනට_දමන්න"; 
-    if (!key || key.includes("GEMINI_KEY")) {
-      this.hideTyping();
-      this.addMsg('bot', '⚠️ Groq API Key එක ඇතුළත් කර නැත. Settings හි Gemini Key තැනට Groq Key එක ලබා දෙන්න.');
-      return;
-    }
+    // 2. පද්ධතියේ දත්ත AI එකට පෙනෙන ලෙස සකස් කිරීම (Live Context)
+    const inventorySummary = S.items.map(i => 
+      `${i.name}: Rs.${i.price} (Stock: ${getStock(i).toFixed(2)} ${i.unit||''})`
+    ).slice(0, 60).join('\n'); // බඩු 60ක පමණ විස්තර යවයි
 
-    const invText = S.items.map(i =>
-      `- ID:${i.id} | ${i.name} | Rs.${i.price || 0}/${i.unit || 'u'} | Stock:${getStock(i).toFixed(2)}`
-    ).join('\n');
-    
+    const lowStockList = S.items.filter(i => getStock(i) <= (i.lowStockThreshold || 5))
+                                .map(i => i.name).join(', ') || "සියලුම තොග ප්‍රමාණවත්";
+
     const today = new Date().toDateString();
     const todaySales = S.sales.filter(s => new Date(s.date).toDateString() === today);
-    const todayTotal = todaySales.reduce((a, s) => a + (s.total || 0), 0);
+    const todayRevenue = todaySales.reduce((a, s) => a + (s.total || 0), 0);
 
-    const sysPrompt = `You are JM Smart AI for "${S.settings.shopName}". 
-    INVENTORY: ${invText}
-    TODAY SALES: Rs.${todayTotal.toFixed(2)}. 
-    If user wants to add item, reply: [ADD_TO_CART:ID:Name]. Respond in Sinhala if user asks in Sinhala. Be concise. Always use Rs.`;
+    // 3. POS-GPT ආකාරයේ ප්‍රබල System Prompt එක
+    const sysPrompt = `You are "J&M POS-GPT" — a highly intelligent business analyst and shop assistant for "${S.settings.shopName}".
+
+SYSTEM CONTEXT (LIVE DATA):
+- INVENTORY: 
+${inventorySummary}
+- LOW STOCK ALERT: ${lowStockList}
+- TODAY'S PERFORMANCE: Revenue Rs.${todayRevenue.toFixed(2)}, Transactions: ${todaySales.length}
+
+YOUR CAPABILITIES & RULES:
+1. DATA ANALYST: If user asks about sales, stock, or prices, use the LIVE DATA above.
+2. ACTION: To add an item to cart, reply ONLY: [ADD_TO_CART:ITEM_ID:ITEM_NAME]
+3. INTELLIGENCE: Like ChatGPT/Gemini, you can answer ANY general question, give business advice, or solve math.
+4. LANGUAGE: Respond in SINHALA if the user speaks Sinhala. Be friendly but professional.
+5. RECOMMENDATION: Suggest items to restock or items to promote based on stock.
+
+Be concise and smart. Always use Rs. for currency.`;
 
     try {
-      // මෙතැනදී Groq API එකට Call කරයි
-      const res = await fetch(`https://api.groq.com/openai/v1/chat/completions`, {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${key}`
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
+          model: "llama-3.3-70b-versatile", // ChatGPT-4 මට්ටමේ ඇති මාදිලිය
           messages: [
             { role: "system", content: sysPrompt },
             { role: "user", content: msg }
           ],
-          temperature: 0.7,
-          max_tokens: 500
+          temperature: 0.6, // නිර්මාණශීලී බව සහ නිවැරදි බව අතර සමබරතාවය
+          max_tokens: 1000
         })
       });
 
       const data = await res.json();
       if (data.error) throw new Error(data.error.message);
       
-      let reply = data.choices?.[0]?.message?.content || 'පිළිතුරක් ලබා ගැනීමට නොහැකි විය.';
-
-      const cartMatch = reply.match(/\[ADD_TO_CART:([^\s:]+):([^\]]+)\]/);
+      const reply = data.choices[0].message.content;
       this.hideTyping();
 
+      // භාණ්ඩයක් Cart එකට එක් කිරීමේ Logic එක
+      const cartMatch = reply.match(/\[ADD_TO_CART:([^\s:]+):([^\]]+)\]/);
       if (cartMatch) {
         const itemId = cartMatch[1];
-        const itemName = cartMatch[2];
-        const item = S.items.find(i => i.id === itemId) || S.items.find(i => i.name.toLowerCase().includes(itemName.toLowerCase()));
-        reply = reply.replace(cartMatch[0], '').trim();
+        const item = S.items.find(i => i.id === itemId);
+        const cleanReply = reply.replace(cartMatch[0], '').trim();
+        
         if (item) {
           this._pending = item;
-          this.addMsg('bot', (reply || `**${item.name}** cart එකට add කරන්නද?`) + '\n\n[confirm: "ඔව්" / "yes"]', item.id, item.name);
+          this.addMsg('bot', (cleanReply || `මම **${item.name}** cart එකට දාන්නද?`) + '\n\n(ඔව්/නැහැ පවසන්න)', item.id, item.name);
         } else {
-          this.addMsg('bot', reply || 'බඩුව සොයාගත නොහැකි විය.');
+          this.addMsg('bot', cleanReply || "සමාවන්න, ඒ බඩුව සොයාගන්න බැරි වුණා.");
         }
       } else {
         this.addMsg('bot', reply);
       }
+
     } catch (e) {
       this.hideTyping();
-      this.addMsg('bot', '❌ AI Error: ' + e.message);
+      this.addMsg('bot', "❌ POS-GPT Error: " + e.message);
     }
   },
-  
-  // පහත අනෙක් functions (addMsg, showTyping, clear) ඔබ සතුව ඇති ආකාරයටම පවතී...
-  quick(msg) { document.getElementById('aiInput').value = msg; this.send(); },
+
+  // අනෙක් අත්‍යවශ්‍ය Functions (වෙනස් නොකරන්න)
   addMsg(role, text, itemId=null, itemName=null) {
     const msgs = document.getElementById('aiMsgs');
     const div = document.createElement('div');
-    div.className = 'ai-msg '+role;
-    const av = role==='bot' ? `<div class="msg-avatar">✨</div>` : `<div class="msg-avatar">👤</div>`;
+    div.className = 'ai-msg ' + role;
     const formatted = text.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
-    let action = '';
-    if (itemId && itemName) {
-      action = `<button class="ai-action" onclick="POS.addFlow('${itemId}');this.textContent='✅ Added!';this.style.background='var(--green2)'">➕ Add ${itemName} to Cart</button>`;
-    }
-    div.innerHTML = `${av}<div><div class="msg-bubble">${formatted}</div>${action}</div>`;
+    let btn = (itemId && itemName) ? `<button class="ai-action" onclick="POS.addFlow('${itemId}');this.textContent='✅ Added!'">➕ Add ${itemName}</button>` : '';
+    div.innerHTML = `<div class="msg-avatar">${role==='bot'?'✨':'👤'}</div><div><div class="msg-bubble">${formatted}</div>${btn}</div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
   },
@@ -2030,18 +2025,13 @@ const AI = {
     div.innerHTML = `<div class="msg-avatar">✨</div><div class="typing"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
-    document.getElementById('aiStatus').textContent = 'Thinking...';
+    document.getElementById('aiStatus').textContent = 'POS-GPT is thinking...';
   },
-  hideTyping() {
-    document.getElementById('typingDot')?.remove();
+  hideTyping() { 
+    document.getElementById('typingDot')?.remove(); 
     document.getElementById('aiStatus').textContent = 'Ready';
-  },
-  clear() {
-    const msgs = document.getElementById('aiMsgs');
-    msgs.innerHTML = `<div class="ai-msg bot"><div class="msg-avatar">✨</div><div><div class="msg-bubble">Chat cleared! 😊</div></div></div>`;
   }
 };
-
 // ─── SETTINGS ─────────────────────────────────────
 const Settings = {
   open() {
