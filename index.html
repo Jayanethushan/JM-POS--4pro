@@ -342,63 +342,169 @@ td{padding:9px 12px;font-size:12.5px;vertical-align:middle;}
 .sales-filter{display:flex;gap:6px;margin-bottom:10px;align-items:center;}
 .sales-filter select{max-width:120px;padding:5px 10px;font-size:12px;}
 
-/* ══════════════ AI ASSISTANT TAB ══════════════ */
-#aiTab{flex-direction:column;}
-.ai-head{
-  padding:12px 16px;border-bottom:1px solid var(--border);
-  display:flex;align-items:center;gap:10px;flex-shrink:0;
-}
-.ai-avatar{
-  width:38px;height:38px;border-radius:50%;flex-shrink:0;
-  background:linear-gradient(135deg,var(--cyan),var(--purple));
-  display:flex;align-items:center;justify-content:center;font-size:17px;
-  box-shadow:var(--glow-cyan);
-}
-.ai-name{font-size:15px;font-weight:800;}
-.ai-status{font-size:11px;color:var(--green);display:flex;align-items:center;gap:4px;margin-top:1px;}
-.ai-status::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;}
-.ai-messages{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px;}
-.ai-msg{display:flex;gap:9px;max-width:88%;}
-.ai-msg.user{flex-direction:row-reverse;align-self:flex-end;}
-.msg-bubble{padding:9px 13px;border-radius:var(--r12);font-size:13px;line-height:1.55;}
-.ai-msg.bot .msg-bubble{
-  background:var(--glass2);border:1px solid var(--border2);
-  border-radius:4px var(--r12) var(--r12) var(--r12);
-}
-.ai-msg.user .msg-bubble{
-  background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.22);
-  border-radius:var(--r12) 4px var(--r12) var(--r12);
-}
-.msg-avatar{
-  width:26px;height:26px;border-radius:50%;flex-shrink:0;margin-top:2px;
-  display:flex;align-items:center;justify-content:center;font-size:11px;
-}
-.ai-msg.bot .msg-avatar{background:linear-gradient(135deg,var(--cyan),var(--purple));}
-.ai-msg.user .msg-avatar{background:var(--bg3);border:1px solid var(--border2);}
-.typing{display:flex;align-items:center;gap:4px;padding:9px 13px;background:var(--glass2);border:1px solid var(--border2);border-radius:4px var(--r12) var(--r12) var(--r12);}
-.dot{width:6px;height:6px;border-radius:50%;background:var(--cyan);animation:bounce .7s ease-in-out infinite;}
-.dot:nth-child(2){animation-delay:.15s;}
-.dot:nth-child(3){animation-delay:.3s;}
-@keyframes bounce{0%,60%,100%{transform:translateY(0);}30%{transform:translateY(-7px);}}
-.ai-input-bar{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;flex-shrink:0;}
-.ai-input-bar input{flex:1;}
-.ai-action{
-  display:inline-flex;align-items:center;gap:6px;
-  padding:6px 12px;background:var(--cyan3);
-  border:1px solid rgba(0,212,255,0.3);border-radius:20px;
-  color:var(--cyan);font-size:12px;font-weight:700;
-  cursor:pointer;transition:all .15s;margin-top:8px;
-}
-.ai-action:hover{background:rgba(0,212,255,0.2);}
-.ai-quick-btns{padding:8px 14px;display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;border-top:1px solid var(--border);}
-.ai-quick{
-  padding:5px 11px;border-radius:20px;
-  background:var(--glass);border:1px solid var(--border2);
-  color:var(--t2);font-size:11px;font-weight:600;cursor:pointer;
-  transition:all .15s;font-family:'Exo 2',sans-serif;
-}
-.ai-quick:hover{border-color:var(--cyan);color:var(--cyan);}
+// ─── J&M POS-GPT PRO ENGINE (GROQ / LLAMA 3.3 70B) ────────────────
+const AI = {
+  _pending: null,
+  _history: [], // පෙර කතාබහ මතක තබා ගැනීමට
 
+  async send() {
+    const input = document.getElementById('aiInput');
+    const msg = input.value.trim();
+    if (!msg) return;
+    
+    input.value = '';
+    this.addMsg('user', msg);
+    this.showTyping();
+
+    const key = S.settings.geminiKey || "";
+    if (!key) {
+      this.hideTyping();
+      this.addMsg('bot', '⚠️ කරුණාකර Settings හි Groq API Key එක ඇතුළත් කරන්න.');
+      return;
+    }
+
+    // 1. පද්ධතියේ දත්ත ඉතා ගැඹුරින් සකස් කිරීම
+    const today = new Date().toDateString();
+    const todaySales = S.sales.filter(s => new Date(s.date).toDateString() === today);
+    const totalRevenue = todaySales.reduce((a, s) => a + (s.total || 0), 0);
+    
+    // වැඩිපුරම විකිණෙන භාණ්ඩ හඳුනා ගැනීම
+    const itemCounts = {};
+    todaySales.forEach(s => s.items.forEach(i => {
+      itemCounts[i.name] = (itemCounts[i.name] || 0) + i.qty;
+    }));
+    const topItems = Object.entries(itemCounts).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => x[0]).join(', ');
+
+    // සම්පූර්ණ බඩු ලැයිස්තුව (Stock level සහ මිල සමඟ)
+    const fullInventory = S.items.map(i => {
+      const stock = getStock(i);
+      return `[ID:${i.id}] ${i.name} | මිල:Rs.${i.price} | තොග:${stock.toFixed(2)} ${i.unit||''}${stock <= (i.lowStockThreshold||5) ? ' (LOW)' : ''}`;
+    }).join('\n');
+
+    // 2. AI එකට ලබා දෙන උපදෙස් මාලාව (Super Prompt)
+    const sysPrompt = `You are "J&M POS-GPT PRO", an elite business consultant and shop manager for "${S.settings.shopName}" in Sri Lanka.
+
+CORE SYSTEM DATA:
+- SHOP NAME: ${S.settings.shopName}
+- TODAY'S PERFORMANCE: Revenue Rs.${totalRevenue.toFixed(2)} | Bills: ${todaySales.length}
+- TOP SELLING TODAY: ${topItems || 'No sales yet'}
+- FULL INVENTORY DATA:
+${fullInventory}
+
+OPERATIONAL GUIDELINES:
+1. BUSINESS INTELLIGENCE: You don't just give data; you give advice. (e.g., "සීනි තොග අඩුයි, අද හවසම ඕඩර් කරන්න.")
+2. CART ACTION: If user wants to add an item, you MUST include the tag [ADD_TO_CART:ITEM_ID:ITEM_NAME] in your response.
+3. CONVERSATION: Remember you are a Sri Lankan assistant. Use polite Sinhala (ගෞරවනීය සිංහල).
+4. VERSATILITY: You are as smart as ChatGPT. You can write letters, solve complex math, give recipes, or plan business growth strategies.
+5. NO HALLUCINATION: If an item is not in the list, suggest the closest alternative from the inventory.
+
+Always use "Rs." for money. If you're suggesting to add to cart, ask for confirmation.`;
+
+    // 3. කතාවේ ඉතිහාසය (Memory) පවත්වා ගැනීම
+    this._history.push({ role: "user", content: msg });
+    if (this._history.length > 10) this._history.shift(); // පණිවිඩ 10ක් මතක තබා ගනී
+
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          messages: [
+            { role: "system", content: sysPrompt },
+            ...this._history
+          ],
+          temperature: 0.6,
+          max_tokens: 1200, // දිගු පිළිතුරු සඳහා
+          top_p: 0.9
+        })
+      });
+
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message);
+      
+      const reply = data.choices[0].message.content;
+      this._history.push({ role: "assistant", content: reply });
+      this.hideTyping();
+
+      // Cart Logic
+      const cartMatch = reply.match(/\[ADD_TO_CART:([^\s:]+):([^\]]+)\]/);
+      if (cartMatch) {
+        const itemId = cartMatch[1];
+        const item = S.items.find(i => i.id === itemId);
+        const cleanReply = reply.replace(cartMatch[0], '').trim();
+        
+        if (item) {
+          this._pending = item;
+          this.addMsg('bot', cleanReply, item.id, item.name);
+        } else {
+          this.addMsg('bot', cleanReply);
+        }
+      } else {
+        this.addMsg('bot', reply);
+      }
+
+    } catch (e) {
+      this.hideTyping();
+      this.addMsg('bot', "❌ POS-GPT Error: " + e.message + "\nකරුණාකර API Key එක සහ අන්තර්ජාල සබඳතාව පරීක්ෂා කරන්න.");
+    }
+  },
+
+  // UI Functions
+  addMsg(role, text, itemId=null, itemName=null) {
+    const msgs = document.getElementById('aiMsgs');
+    const div = document.createElement('div');
+    div.className = 'ai-msg ' + role;
+    
+    // Markdown format කිරීම (Bold and New lines)
+    let formatted = text.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
+    
+    let actionBtn = '';
+    if (itemId && itemName) {
+      actionBtn = `<div style="margin-top:10px;">
+        <button class="ai-action" onclick="POS.addFlow('${itemId}');this.textContent='✅ Added to Cart';this.disabled=true;" style="background:linear-gradient(135deg,#00b09b,#96c93d); color:white; border:none; padding:8px 15px; border-radius:8px; cursor:pointer; font-weight:bold;">
+          ➕ Add ${itemName} to Cart
+        </button>
+      </div>`;
+    }
+
+    div.innerHTML = `
+      <div class="msg-avatar" style="font-size:20px;">${role==='bot'?'✨':'👤'}</div>
+      <div style="max-width: 85%;">
+        <div class="msg-bubble" style="background:${role==='bot'?'var(--bg3)':'var(--bg4)'}; padding:12px; border-radius:15px; line-height:1.5; border:1px solid rgba(255,255,255,0.05);">
+          ${formatted}
+        </div>
+        ${actionBtn}
+      </div>`;
+      
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+  },
+
+  showTyping() {
+    const msgs = document.getElementById('aiMsgs');
+    const div = document.createElement('div');
+    div.id = 'typingDot';
+    div.className = 'ai-msg bot';
+    div.innerHTML = `<div class="msg-avatar">✨</div><div class="typing" style="background:var(--bg3); padding:15px; border-radius:15px;"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    document.getElementById('aiStatus').textContent = 'POS-GPT is analyzing data...';
+  },
+
+  hideTyping() { 
+    document.getElementById('typingDot')?.remove(); 
+    document.getElementById('aiStatus').textContent = 'Ready';
+  },
+
+  clear() {
+    this._history = [];
+    document.getElementById('aiMsgs').innerHTML = `<div class="ai-msg bot"><div class="msg-avatar">✨</div><div><div class="msg-bubble">Memory cleared! මම ඔබට අද කොහොමද උදව් කරන්නේ?</div></div></div>`;
+  }
+};
 /* ══════════════ MODALS ══════════════ */
 .overlay{
   position:fixed;inset:0;background:rgba(0,0,0,0.72);
